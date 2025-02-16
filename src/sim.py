@@ -7,7 +7,8 @@ In this version:
   - The human player's hand is summarized as counts per suit (using colors for red/black).
   - Real inventories of cards and cash are tracked so no trader can exceed their limits.
   - Single-character responses are used for suit input.
-  - Trade executed messages now use Unicode suit symbols instead of suit names.
+  - Trade executed messages now use Unicode suit symbols (without arbitrary labels).
+  - After each executed trade (whether by you or a bot), your updated hand and money are shown.
   - A command-line option (--hide-opponents) hides opponents' hands.
 Author: [Your Name]
 Date: 2025-02-15
@@ -144,7 +145,7 @@ def hand_summary(hand: List[str]) -> str:
 class Player:
     def __init__(self, name, hand, money):
         self.name = name
-        # Internally store full card labels (e.g. "♣8") but the UI shows only counts.
+        # Internally store full card labels (e.g. "♣8") but UI shows only counts.
         self.hand = hand[:]
         self.money = money
         self.beliefs = {"Spades": 0.25, "Clubs": 0.25, "Hearts": 0.25, "Diamonds": 0.25}
@@ -172,7 +173,6 @@ config = {
     }
 }
 
-# Use Unicode symbols for suits.
 suit_unicode_map = {"Spades": "♠", "Clubs": "♣", "Hearts": "♥", "Diamonds": "♦"}
 unicode_to_name = {"♠": "Spades", "♣": "Clubs", "♥": "Hearts", "♦": "Diamonds"}
 
@@ -296,7 +296,7 @@ def human_propose_trade(opponent):
             }
             trade_events_global.append(event)
             msg = f"Trade Executed: You bought one {suit_unicode_map[suit]} card from {opponent.name} at {price:.2f}."
-            console.print(Panel(f"Updated Hand:\n{hand_summary(human.hand)}", title="Your Updated Hand", style="bold green"))
+            console.print(Panel(f"Updated Hand:\n{hand_summary(human.hand)}\nMoney: {human.money}", title="Your Updated Hand", style="bold green"))
             return msg
         else:
             return f"Trade Rejected by {opponent.name} (roll {roll:.2f} vs. accept prob {accept_prob:.2f})."
@@ -326,7 +326,7 @@ def human_propose_trade(opponent):
             }
             trade_events_global.append(event)
             msg = f"Trade Executed: You sold one {suit_unicode_map[suit]} card to {opponent.name} at {price:.2f}."
-            console.print(Panel(f"Updated Hand:\n{hand_summary(human.hand)}", title="Your Updated Hand", style="bold green"))
+            console.print(Panel(f"Updated Hand:\n{hand_summary(human.hand)}\nMoney: {human.money}", title="Your Updated Hand", style="bold green"))
             return msg
         else:
             return f"Trade Rejected by {opponent.name} (roll {roll:.2f} vs. accept prob {accept_prob:.2f})."
@@ -366,7 +366,11 @@ def bot_propose_trade(opponent):
                 "price": round(price, 2)
             }
             trade_events_global.append(event)
-            return f"Trade Executed: You sold one {suit_unicode_map[suit]} card to {opponent.name} at {price:.2f}."
+            msg = f"Trade Executed: You sold one {suit_unicode_map[suit]} card to {opponent.name} at {price:.2f}."
+            # Show updated hand for the human.
+            human = players[HUMAN_PLAYER]
+            console.print(Panel(f"Updated Hand:\n{hand_summary(human.hand)}\nMoney: {human.money}", title="Your Updated Hand", style="bold green"))
+            return msg
         else:
             return f"You declined Bot {opponent.name}'s proposal to buy your {suit_unicode_map[suit]} card."
     else:
@@ -402,7 +406,10 @@ def bot_propose_trade(opponent):
                 "price": round(price, 2)
             }
             trade_events_global.append(event)
-            return f"Trade Executed: You bought one {suit_unicode_map[suit]} card from {opponent.name} at {price:.2f}."
+            msg = f"Trade Executed: You bought one {suit_unicode_map[suit]} card from {opponent.name} at {price:.2f}."
+            human = players[HUMAN_PLAYER]
+            console.print(Panel(f"Updated Hand:\n{hand_summary(human.hand)}\nMoney: {human.money}", title="Your Updated Hand", style="bold green"))
+            return msg
         else:
             return f"You declined Bot {opponent.name}'s proposal to sell a {suit_unicode_map[suit]} card."
 
