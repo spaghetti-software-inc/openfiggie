@@ -1,14 +1,16 @@
 #!/usr/bin/env python3
 """
-Turn-Based Interactive Simulation of Figgie with Pydantic Game State Models
+Turn-Based Interactive Simulation of Figgie with Particle Filter Bayesian Updates
 and a Rich-Powered Unicode Interface.
+
 In this version:
   - The game state is represented by Pydantic models.
+  - Each player's beliefs about the goal suit are tracked via a particle filter.
   - The human player's hand is summarized as counts per suit (using colors for red/black).
   - Real inventories of cards and cash are tracked so no trader can exceed their limits.
   - Single-character responses are used for suit input.
-  - Trade executed messages now use Unicode suit symbols (without arbitrary labels).
-  - After each executed trade (whether by you or a bot), your updated hand and money are shown.
+  - Trade executed messages now use Unicode suit symbols.
+  - After each executed trade, your updated hand and money are shown.
   - A command-line option (--hide-opponents) hides opponents' hands.
 Author: [Your Name]
 Date: 2025-02-15
@@ -45,7 +47,7 @@ class DeckSetup(BaseModel):
 class PlayerState(BaseModel):
     name: str
     hand: List[str]
-    money: int
+    money: float
     beliefs: Dict[str, float]
 
 class TradeEvent(BaseModel):
@@ -80,7 +82,7 @@ def logistic(x):
 
 def valuation_given_candidate(card_suit, candidate_goal):
     """
-    Return the value of a card of suit `card_suit` if candidate_goal is the valuable suit.
+    Return the value of a card of suit `card_suit` if candidate_goal is assumed to be the goal suit.
       - 30 if card_suit equals candidate_goal.
       - 20 if card_suit is the same color as candidate_goal.
       - 10 otherwise.
@@ -97,31 +99,12 @@ def valuation_given_candidate(card_suit, candidate_goal):
 
 def expected_value(card_suit, beliefs):
     """
-    Compute expected value of a card of suit `card_suit` based on a player's beliefs.
+    Compute expected value of a card of suit `card_suit` based on a player's belief distribution.
     """
     ev = 0
     for candidate, prob in beliefs.items():
         ev += prob * valuation_given_candidate(card_suit, candidate)
     return ev
-
-def update_beliefs(beliefs, card_suit, price, sigma=3.0):
-    """
-    Update a belief distribution given an observed trade of a card of suit `card_suit`
-    at a given price using a Gaussian likelihood.
-    """
-    new_beliefs = {}
-    total = 0.0
-    for candidate, prob in beliefs.items():
-        v_candidate = valuation_given_candidate(card_suit, candidate)
-        likelihood = math.exp(-((price - v_candidate) ** 2) / (2 * sigma**2))
-        new_beliefs[candidate] = prob * likelihood
-        total += new_beliefs[candidate]
-    if total > 0:
-        for candidate in new_beliefs:
-            new_beliefs[candidate] /= total
-        return new_beliefs
-    else:
-        return {c: 1.0 / len(beliefs) for c in beliefs}
 
 def hand_summary(hand: List[str]) -> str:
     """
@@ -140,15 +123,77 @@ def hand_summary(hand: List[str]) -> str:
     )
     return summary
 
+# --- Particle Filter for Bayesian Updates ---
+
+class Particle:
+    def __init__(self, candidate_goal, weight=1.0):
+        self.candidate_goal = candidate_goal
+        self.weight = weight
+
+class ParticleFilter:
+    def __init__(self, n_particles=100):
+        self.n_particles = n_particles
+        self.particles = []
+        self.initialize_particles()
+
+    def initialize_particles(self):
+        # Candidate goal suits: "Spades", "Clubs", "Hearts", "Diamonds"
+        candidates = ["Spades", "Clubs", "Hearts", "Diamonds"]
+        self.particles = []
+        for _ in range(self.n_particles):
+            candidate = random.choice(candidates)
+            self.particles.append(Particle(candidate, weight=1.0))
+        self.normalize_weights()
+
+    def normalize_weights(self):
+        total_weight = sum(p.weight for p in self.particles)
+        if total_weight > 0:
+            for p in self.particles:
+                p.weight /= total_weight
+        else:
+            self.initialize_particles()
+
+    def update(self, card_suit, price, sigma=3.0):
+        """
+        Update each particle's weight based on an observed trade of a card of suit `card_suit`
+        at price `price` using a Gaussian likelihood.
+        """
+        for p in self.particles:
+            expected_val = valuation_given_candidate(card_suit, p.candidate_goal)
+            likelihood = math.exp(-((price - expected_val) ** 2) / (2 * sigma ** 2))
+            p.weight *= likelihood
+        self.normalize_weights()
+        self.resample_if_needed()
+
+    def effective_sample_size(self):
+        return 1.0 / sum(p.weight ** 2 for p in self.particles)
+
+    def resample_if_needed(self, threshold_ratio=0.5):
+        if self.effective_sample_size() < self.n_particles * threshold_ratio:
+            self.resample_particles()
+
+    def resample_particles(self):
+        weights = [p.weight for p in self.particles]
+        new_particles = random.choices(self.particles, weights=weights, k=self.n_particles)
+        self.particles = [Particle(p.candidate_goal, weight=1.0) for p in new_particles]
+        self.normalize_weights()
+
+    def get_belief_distribution(self):
+        belief = {"Spades": 0.0, "Clubs": 0.0, "Hearts": 0.0, "Diamonds": 0.0}
+        for p in self.particles:
+            belief[p.candidate_goal] += p.weight
+        return belief
+
 # --- Player Class ---
 
 class Player:
     def __init__(self, name, hand, money):
         self.name = name
-        # Internally store full card labels (e.g. "♣8") but UI shows only counts.
+        # Store full card labels (e.g. "♣8") while the UI shows summarized counts.
         self.hand = hand[:]
         self.money = money
-        self.beliefs = {"Spades": 0.25, "Clubs": 0.25, "Hearts": 0.25, "Diamonds": 0.25}
+        # Use a particle filter to track beliefs about the goal suit.
+        self.pf = ParticleFilter(n_particles=100)
 
 # --- Global Game Setup ---
 
@@ -181,7 +226,6 @@ deck = []
 for suit, count in deck_distribution.items():
     symbol = suit_unicode_map[suit]
     for i in range(1, count + 1):
-        # The rank is arbitrary and not shown in the UI.
         deck.append(symbol + str(i))
 random.shuffle(deck)
 
@@ -223,11 +267,12 @@ def build_game_state(current_turn: int) -> GameState:
     player_states = []
     for pname, p in players.items():
         summary = hand_summary(p.hand)
+        beliefs = p.pf.get_belief_distribution()
         player_states.append(PlayerState(
             name=pname,
             hand=[summary],
             money=p.money,
-            beliefs=p.beliefs
+            beliefs=beliefs
         ))
     trade_events = [TradeEvent(**te) for te in trade_events_global]
     return GameState(
@@ -274,7 +319,7 @@ def human_propose_trade(opponent):
         opponent_cards = [card for card in opponent.hand if unicode_to_name[card[0]] == suit]
         if not opponent_cards:
             return f"{opponent.name} has no {suit} cards. Trade cannot proceed."
-        bot_ev = expected_value(suit, opponent.beliefs)
+        bot_ev = expected_value(suit, opponent.pf.get_belief_distribution())
         accept_prob = logistic(beta * (price - bot_ev))
         roll = random.random()
         if roll < accept_prob:
@@ -283,8 +328,9 @@ def human_propose_trade(opponent):
             human.hand.append(traded_card)
             human.money -= price
             opponent.money += price
-            for p in players.values():
-                p.beliefs = update_beliefs(p.beliefs, suit, price, sigma=3.0)
+            # Update beliefs using particle filters for all players.
+            for player in players.values():
+                player.pf.update(suit, price, sigma=3.0)
             event = {
                 "trade_index": len(trade_events_global) + 1,
                 "time": round(turn_number * 10.0, 2),
@@ -304,7 +350,7 @@ def human_propose_trade(opponent):
         human_cards = [card for card in human.hand if unicode_to_name[card[0]] == suit]
         if not human_cards:
             return f"You have no {suit} cards to sell. Trade cannot proceed."
-        bot_ev = expected_value(suit, opponent.beliefs)
+        bot_ev = expected_value(suit, opponent.pf.get_belief_distribution())
         accept_prob = logistic(alpha * (bot_ev - price))
         roll = random.random()
         if roll < accept_prob:
@@ -313,8 +359,8 @@ def human_propose_trade(opponent):
             opponent.hand.append(traded_card)
             human.money += price
             opponent.money -= price
-            for p in players.values():
-                p.beliefs = update_beliefs(p.beliefs, suit, price, sigma=3.0)
+            for player in players.values():
+                player.pf.update(suit, price, sigma=3.0)
             event = {
                 "trade_index": len(trade_events_global) + 1,
                 "time": round(turn_number * 10.0, 2),
@@ -340,7 +386,7 @@ def bot_propose_trade(opponent):
             suit = unicode_to_name[card[0]]
         else:
             suit = random.choice(["Spades", "Clubs", "Hearts", "Diamonds"])
-        bot_ev = expected_value(suit, opponent.beliefs)
+        bot_ev = expected_value(suit, opponent.pf.get_belief_distribution())
         price = bot_ev + random.uniform(0, 2)
         if opponent.money < price:
             return f"Bot {opponent.name} does not have enough money to buy. Trade cancelled."
@@ -354,8 +400,8 @@ def bot_propose_trade(opponent):
             opponent.hand.append(traded_card)
             players[HUMAN_PLAYER].money += price
             opponent.money -= price
-            for p in players.values():
-                p.beliefs = update_beliefs(p.beliefs, suit, price, sigma=3.0)
+            for player in players.values():
+                player.pf.update(suit, price, sigma=3.0)
             event = {
                 "trade_index": len(trade_events_global) + 1,
                 "time": round(turn_number * 10.0, 2),
@@ -367,7 +413,6 @@ def bot_propose_trade(opponent):
             }
             trade_events_global.append(event)
             msg = f"Trade Executed: You sold one {suit_unicode_map[suit]} card to {opponent.name} at {price:.2f}."
-            # Show updated hand for the human.
             human = players[HUMAN_PLAYER]
             console.print(Panel(f"Updated Hand:\n{hand_summary(human.hand)}\nMoney: {human.money}", title="Your Updated Hand", style="bold green"))
             return msg
@@ -380,7 +425,7 @@ def bot_propose_trade(opponent):
             suit = unicode_to_name[card[0]]
         else:
             suit = random.choice(["Spades", "Clubs", "Hearts", "Diamonds"])
-        bot_ev = expected_value(suit, opponent.beliefs)
+        bot_ev = expected_value(suit, opponent.pf.get_belief_distribution())
         price = bot_ev - random.uniform(0, 2)
         if players[HUMAN_PLAYER].money < price:
             return f"You do not have enough money to buy. Trade cancelled."
@@ -394,8 +439,8 @@ def bot_propose_trade(opponent):
             players[HUMAN_PLAYER].hand.append(traded_card)
             players[HUMAN_PLAYER].money -= price
             opponent.money += price
-            for p in players.values():
-                p.beliefs = update_beliefs(p.beliefs, suit, price, sigma=3.0)
+            for player in players.values():
+                player.pf.update(suit, price, sigma=3.0)
             event = {
                 "trade_index": len(trade_events_global) + 1,
                 "time": round(turn_number * 10.0, 2),
@@ -425,15 +470,17 @@ def show_status(turn):
         hand_str = hand_summary(player.hand)
         if HIDE_OPPONENTS and pname != HUMAN_PLAYER:
             hand_str = "Hidden"
+        beliefs = player.pf.get_belief_distribution()
         status_table.add_row(
             pname,
             str(player.money),
             hand_str,
-            str(player.beliefs)
+            str(beliefs)
         )
     console.print(status_table)
     game_state = build_game_state(turn)
-    console.print(Panel(game_state.json(indent=2), title="Game State (JSON)", style="magenta"))
+    # Use model_dump_json (Pydantic v2) instead of json(indent=2)
+    console.print(Panel(game_state.model_dump_json(indent=2), title="Game State (JSON)", style="magenta"))
 
 def turn_loop():
     global turn_number
@@ -481,16 +528,14 @@ def turn_loop():
             pname,
             str(player.money),
             str(goal_counts.get(pname, 0)),
-            str(player.beliefs)
+            str(player.pf.get_belief_distribution())
         )
     console.print(final_table)
     console.print(f"[bold blue]Winners: {', '.join(winners)}[/bold blue]")
 
-# --- Main Program Entry Point ---
-
 def main():
     global HIDE_OPPONENTS
-    parser = argparse.ArgumentParser(description="Turn-Based Figgie Game")
+    parser = argparse.ArgumentParser(description="Turn-Based Figgie Game with Particle Filter")
     parser.add_argument("--hide-opponents", action="store_true", help="Hide other players' hands from display")
     args = parser.parse_args()
     HIDE_OPPONENTS = args.hide_opponents
