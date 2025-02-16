@@ -1,38 +1,43 @@
 #!/usr/bin/env python3
 """
-Monte Carlo Simulation of a Figgie Round Using PFN (Portable Figgie Notation)
-with Randomized Initial Deal, Bayesian Inference, and an Interactive REPL
-to allow the user (P1) to play with the bots. Debugging and raw PFN output
-are suppressed in this interactive mode.
+Turn-Based Interactive Simulation of Figgie (Portable Figgie Notation)
+with Bayesian Inference and a Rich-Powered Unicode Interface.
+In this version, the human (P1) gets a chance each turn to interact with each bot
+by proposing trades or passing. The human's current hand and money are displayed
+at the very start and whenever you are prompted.
+A command-line option (--hide-opponents) allows the user to hide the other players' hands.
 Author: [Your Name]
 Date: 2025-02-15
 """
 
 import random
 import math
-import toml  # pip install toml
+import sys
+import argparse
 
 from rich.console import Console
 from rich.table import Table
 from rich.panel import Panel
 from rich.text import Text
 
-# Create a global console object.
+# Create a global rich console.
 console = Console()
 
-# --- Helper Functions --- #
+# Global flag for hiding opponents' hands.
+HIDE_OPPONENTS = False
+
+# --- Helper Functions ---
 
 def logistic(x):
-    """Compute the logistic function."""
+    """Return the logistic function value for x."""
     return 1.0 / (1.0 + math.exp(-x))
 
 def valuation_given_candidate(card_suit, candidate_goal):
     """
-    Returns the valuation for a card of suit `card_suit` given that the
-    candidate goal suit is `candidate_goal`.
-      - If the card suit equals the candidate goal, value is 30.
-      - If the card suit is the same color as candidate goal, value is 20.
-      - Otherwise, value is 10.
+    Return the value of a card of suit `card_suit` if candidate_goal is the valuable suit.
+      - 30 if card_suit equals candidate_goal.
+      - 20 if card_suit is the same color as candidate_goal.
+      - 10 otherwise.
     """
     black_suits = ["Spades", "Clubs"]
     red_suits   = ["Hearts", "Diamonds"]
@@ -46,8 +51,7 @@ def valuation_given_candidate(card_suit, candidate_goal):
 
 def expected_value(card_suit, beliefs):
     """
-    Computes the expected value of a card of suit `card_suit` based on
-    a player's current belief distribution.
+    Compute expected value of a card of suit `card_suit` based on a player's beliefs.
     """
     ev = 0
     for candidate, prob in beliefs.items():
@@ -56,8 +60,8 @@ def expected_value(card_suit, beliefs):
 
 def update_beliefs(beliefs, card_suit, price, sigma=3.0):
     """
-    Updates the belief distribution based on an observed trade of a card of suit
-    `card_suit` at price `price` using a Gaussian likelihood.
+    Update a belief distribution given an observed trade of a card of suit `card_suit`
+    at a given price. Uses a Gaussian likelihood.
     """
     new_beliefs = {}
     total = 0.0
@@ -73,26 +77,26 @@ def update_beliefs(beliefs, card_suit, price, sigma=3.0):
     else:
         return {c: 1.0 / len(beliefs) for c in beliefs}
 
-# --- Player Class --- #
+# --- Player Class ---
 
 class Player:
     def __init__(self, name, hand, money):
         self.name = name
-        self.hand = hand  # e.g., ["♠1", "♣5", ...]
+        self.hand = hand[:]  # e.g., ["♠1", "♣5", ...]
         self.money = money
-        # Initialize uniform belief over possible goal suits.
+        # Each player starts with uniform beliefs over the four candidate goal suits.
         self.beliefs = {"Spades": 0.25, "Clubs": 0.25, "Hearts": 0.25, "Diamonds": 0.25}
 
-# --- Global Game State Initialization --- #
+# --- Global Game Setup ---
 
-# PFN configuration (hidden to players; actual goal suit is used for outcome)
+# Game configuration (hidden to players)
 config = {
     "FiggieGame": {
-        "Title": "Interactive Figgie Round",
+        "Title": "Turn-Based Figgie Round",
         "GameID": "G12345",
         "Players": 4,
         "Date": "2025-02-15",
-        "GameDuration": 60.0,  # seconds
+        "Turns": 10,  # Maximum number of turns.
         "GameVariant": "Standard"
     },
     "DeckSetup": {
@@ -107,12 +111,12 @@ config = {
     }
 }
 
-# Use Unicode suit symbols.
+# Use Unicode symbols for suits.
 suit_unicode_map = {"Spades": "♠", "Clubs": "♣", "Hearts": "♥", "Diamonds": "♦"}
-# Reverse mapping.
+# Reverse mapping: from Unicode symbol to full name.
 unicode_to_name = {"♠": "Spades", "♣": "Clubs", "♥": "Hearts", "♦": "Diamonds"}
 
-# Build the deck based on the distribution.
+# Build deck from distribution.
 deck_distribution = config["DeckSetup"]["Distribution"]
 deck = []
 for suit, count in deck_distribution.items():
@@ -125,200 +129,243 @@ random.shuffle(deck)
 num_players = config["FiggieGame"]["Players"]
 initial_deal = {f"P{i+1}": [] for i in range(num_players)}
 for idx, card in enumerate(deck):
-    player_key = f"P{(idx % num_players) + 1}"
-    initial_deal[player_key].append(card)
-# Prepare a string version for PFN (not printed).
-deal_str = {p: ",".join(cards) for p, cards in initial_deal.items()}
+    key = f"P{(idx % num_players) + 1}"
+    initial_deal[key].append(card)
 
-# Create player objects.
-players = {}
+# Create Player objects.
 INITIAL_MONEY = 350
+players = {}
 for pname, cards in initial_deal.items():
-    players[pname] = Player(pname, cards.copy(), INITIAL_MONEY)
+    players[pname] = Player(pname, cards, INITIAL_MONEY)
 
-# Global game parameters.
-current_time = 0.0
-game_duration = config["FiggieGame"]["GameDuration"]
+# Global parameters.
+turn_number = 1
 pot_amount = 100
-trade_events = []
-trade_index = 1
+# For outcome purposes, we know the actual goal suit.
 actual_goal_suit = config["DeckSetup"]["GoalSuit"]
 
-# For interactive play, designate P1 as the human player.
+# Designate P1 as the human player.
 HUMAN_PLAYER = "P1"
 
-# --- REPL Functions --- #
+# --- Trade Mechanism Functions ---
 
-def show_help():
-    help_text = """
-Available commands:
-  advance (a)   - Simulate the next trade candidate event.
-  status  (s)   - Show current game status.
-  help    (h)   - Show this help message.
-  quit    (q)   - Quit the game.
+def human_propose_trade(opponent):
     """
-    console.print(Panel(help_text.strip(), title="Help", style="cyan"))
+    Let the human (P1) propose a trade with a given opponent.
+    Displays P1's current hand and money.
+    Returns a message string.
+    """
+    human = players[HUMAN_PLAYER]
+    hand_str = ", ".join(human.hand)
+    console.print(Panel(f"Your current hand:\n{hand_str}\nMoney: {human.money}", title="Your Hand", style="bold green"))
+    
+    console.print(Panel(f"Your turn to propose a trade with {opponent.name}.", style="bold blue"))
+    action = console.input("[bold]Do you want to [B]uy or [S]ell? (B/S): [/bold]").strip().lower()
+    if action not in ("b", "s"):
+        return "Invalid action. Trade cancelled."
+    
+    suit = console.input("[bold]Enter the suit (Spades, Clubs, Hearts, Diamonds): [/bold]").strip().capitalize()
+    if suit not in ["Spades", "Clubs", "Hearts", "Diamonds"]:
+        return "Invalid suit. Trade cancelled."
+    
+    try:
+        price = float(console.input("[bold]Enter your proposed price: [/bold]").strip())
+    except ValueError:
+        return "Invalid price. Trade cancelled."
+    
+    alpha = 0.5
+    beta = 0.5
+    
+    if action == "b":
+        opponent_cards = [card for card in opponent.hand if unicode_to_name[card[0]] == suit]
+        if not opponent_cards:
+            return f"{opponent.name} has no {suit} cards. Trade cannot proceed."
+        bot_ev = expected_value(suit, opponent.beliefs)
+        accept_prob = logistic(beta * (price - bot_ev))
+        roll = random.random()
+        if roll < accept_prob:
+            traded_card = opponent_cards[0]
+            opponent.hand.remove(traded_card)
+            human.hand.append(traded_card)
+            human.money -= price
+            opponent.money += price
+            for p in players.values():
+                p.beliefs = update_beliefs(p.beliefs, suit, price, sigma=3.0)
+            return f"Trade Executed: You bought {traded_card} ({suit}) from {opponent.name} at {price:.2f}."
+        else:
+            return f"Trade Rejected by {opponent.name} (roll {roll:.2f} vs. accept prob {accept_prob:.2f})."
+    
+    else:
+        human_cards = [card for card in human.hand if unicode_to_name[card[0]] == suit]
+        if not human_cards:
+            return f"You have no {suit} cards to sell. Trade cannot proceed."
+        bot_ev = expected_value(suit, opponent.beliefs)
+        accept_prob = logistic(alpha * (bot_ev - price))
+        roll = random.random()
+        if roll < accept_prob:
+            traded_card = human_cards[0]
+            human.hand.remove(traded_card)
+            opponent.hand.append(traded_card)
+            human.money += price
+            opponent.money -= price
+            for p in players.values():
+                p.beliefs = update_beliefs(p.beliefs, suit, price, sigma=3.0)
+            return f"Trade Executed: You sold {traded_card} ({suit}) to {opponent.name} at {price:.2f}."
+        else:
+            return f"Trade Rejected by {opponent.name} (roll {roll:.2f} vs. accept prob {accept_prob:.2f})."
 
-def show_status():
-    status_table = Table(title="Current Status", show_edge=True)
+def bot_propose_trade(opponent):
+    """
+    Have the bot (opponent) propose a trade to the human.
+    Returns a message string.
+    """
+    action = random.choice(["buy", "sell"])
+    if action == "buy":
+        human_cards = players[HUMAN_PLAYER].hand
+        if human_cards:
+            card = random.choice(human_cards)
+            suit = unicode_to_name[card[0]]
+        else:
+            suit = random.choice(["Spades", "Clubs", "Hearts", "Diamonds"])
+        bot_ev = expected_value(suit, opponent.beliefs)
+        price = bot_ev + random.uniform(0, 2)
+        response = console.input(f"[bold]Bot {opponent.name} proposes to BUY your {suit} card for {price:.2f}. Accept? (y/n): [/bold]").strip().lower()
+        if response == "y":
+            human_cards = [card for card in players[HUMAN_PLAYER].hand if unicode_to_name[card[0]] == suit]
+            if not human_cards:
+                return f"You have no {suit} cards to sell. Trade cancelled."
+            traded_card = human_cards[0]
+            players[HUMAN_PLAYER].hand.remove(traded_card)
+            opponent.hand.append(traded_card)
+            players[HUMAN_PLAYER].money += price
+            opponent.money -= price
+            for p in players.values():
+                p.beliefs = update_beliefs(p.beliefs, suit, price, sigma=3.0)
+            return f"Trade Executed: You sold {traded_card} ({suit}) to {opponent.name} at {price:.2f}."
+        else:
+            return f"You declined Bot {opponent.name}'s proposal to buy your {suit} card."
+    else:
+        bot_cards = [card for card in opponent.hand]
+        if bot_cards:
+            card = random.choice(bot_cards)
+            suit = unicode_to_name[card[0]]
+        else:
+            suit = random.choice(["Spades", "Clubs", "Hearts", "Diamonds"])
+        bot_ev = expected_value(suit, opponent.beliefs)
+        price = bot_ev - random.uniform(0, 2)
+        response = console.input(f"[bold]Bot {opponent.name} proposes to SELL you a {suit} card for {price:.2f}. Buy? (y/n): [/bold]").strip().lower()
+        if response == "y":
+            bot_cards = [card for card in opponent.hand if unicode_to_name[card[0]] == suit]
+            if not bot_cards:
+                return f"Bot {opponent.name} has no {suit} cards to sell. Trade cancelled."
+            traded_card = bot_cards[0]
+            opponent.hand.remove(traded_card)
+            players[HUMAN_PLAYER].hand.append(traded_card)
+            players[HUMAN_PLAYER].money -= price
+            opponent.money += price
+            for p in players.values():
+                p.beliefs = update_beliefs(p.beliefs, suit, price, sigma=3.0)
+            return f"Trade Executed: You bought {traded_card} ({suit}) from {opponent.name} at {price:.2f}."
+        else:
+            return f"You declined Bot {opponent.name}'s proposal to sell a {suit} card."
+
+# --- REPL / Turn Loop Functions ---
+
+def show_status(turn):
+    status_table = Table(title=f"Status at Turn {turn}", show_edge=True)
     status_table.add_column("Player", style="bold")
     status_table.add_column("Money", justify="right")
     status_table.add_column("Hand")
     status_table.add_column("Beliefs", style="dim")
     for pname, player in players.items():
+        if HIDE_OPPONENTS and pname != HUMAN_PLAYER:
+            hand_str = "Hidden"
+        else:
+            hand_str = ", ".join(player.hand)
         status_table.add_row(
             pname,
             str(player.money),
-            ", ".join(player.hand),
+            hand_str,
             str(player.beliefs)
         )
-    status_table.add_row("Time", f"{current_time:.2f}", "", "")
     console.print(status_table)
 
-def simulate_trade_event():
-    """Simulate one candidate trade event; if HUMAN_PLAYER is involved, prompt for decision."""
-    global current_time, trade_index
-    dt = random.expovariate(1 / 5.0)
-    current_time += dt
-    if current_time >= game_duration:
-        return None  # Signal game time is over.
-
-    # Select a seller with at least one card.
-    seller_candidates = [p for p in players.values() if p.hand]
-    if not seller_candidates:
-        return "No seller available."
-    seller = random.choice(seller_candidates)
-
-    # Select a random card from seller.
-    card = random.choice(seller.hand)
-    symbol = card[0]
-    suit = unicode_to_name[symbol]
-
-    # Select a buyer different from seller.
-    buyer_candidates = [p for p in players.values() if p.name != seller.name]
-    if not buyer_candidates:
-        return "No buyer available."
-    buyer = random.choice(buyer_candidates)
-
-    # Compute expected values.
-    buyer_ev = expected_value(suit, buyer.beliefs)
-    seller_ev = expected_value(suit, seller.beliefs)
-    noise = random.uniform(-2, 2)
-    candidate_price = max(1, (buyer_ev + seller_ev) / 2 + noise)
-
-    # Check buyer funds.
-    if buyer.money < candidate_price:
-        return f"T={current_time:.2f}: Trade candidate skipped – Buyer {buyer.name} lacks funds."
-
-    # Compute acceptance probabilities.
-    alpha = 0.5; beta = 0.5
-    buyer_prob = logistic(alpha * (buyer_ev - candidate_price))
-    seller_prob = logistic(beta * (candidate_price - seller_ev))
-    buyer_roll = random.random()
-    seller_roll = random.random()
-
-    # Prepare candidate trade message.
-    message = (f"T={current_time:.2f}: Seller {seller.name} offers {card} ({suit}) | "
-               f"Candidate Price: {candidate_price:.2f} | Buyer EV: {buyer_ev:.2f}, Seller EV: {seller_ev:.2f} | "
-               f"Buyer Prob: {buyer_prob:.2f}, Seller Prob: {seller_prob:.2f} | "
-               f"Rolls: Buyer {buyer_roll:.2f}, Seller {seller_roll:.2f}")
-
-    # If HUMAN_PLAYER is involved, override the decision.
-    if buyer.name == HUMAN_PLAYER or seller.name == HUMAN_PLAYER:
-        console.print(Text(message, style="yellow"))
-        decision = console.input("[bold blue]You are involved in this trade. Accept it? (y/n): [/bold blue]").strip().lower()
-        if decision == "y":
-            accepted = True
-        else:
-            accepted = False
-    else:
-        # Bots decide automatically.
-        accepted = (buyer_roll < buyer_prob and seller_roll < seller_prob)
-
-    if accepted:
-        seller.hand.remove(card)
-        buyer.hand.append(card)
-        buyer.money -= candidate_price
-        seller.money += candidate_price
-        # Record the trade event.
-        event = {
-            "TradeIndex": trade_index,
-            "T": round(current_time, 2),
-            "Buyer": buyer.name,
-            "Seller": seller.name,
-            "Suit": suit,
-            "Card": card,
-            "Price": round(candidate_price, 2)
-        }
-        trade_events.append(event)
-        trade_index += 1
-        result_msg = f"Trade Executed: {buyer.name} buys {card} ({suit}) from {seller.name} at {candidate_price:.2f}."
-        # After a trade, all players update their beliefs.
-        for p in players.values():
-            p.beliefs = update_beliefs(p.beliefs, suit, candidate_price, sigma=3.0)
-        return result_msg
-    else:
-        return (f"Trade Rejected: Buyer {buyer.name} (roll {buyer_roll:.2f} vs. {buyer_prob:.2f}) "
-                f"or Seller {seller.name} (roll {seller_roll:.2f} vs. {seller_prob:.2f}) declined.")
-
-# --- Main Interactive REPL Loop --- #
-
-def repl():
-    console.rule("[bold blue]Interactive Figgie REPL[/bold blue]")
-    show_help()
-    while current_time < game_duration:
-        cmd = console.input("[bold green]REPL> [/bold green]").strip().lower()
-        if cmd in ["advance", "a"]:
-            event_result = simulate_trade_event()
-            if event_result is None:
-                console.print("[bold red]Game time has expired.[/bold red]")
-                break
-            console.print(Text(event_result, style="magenta"))
-        elif cmd in ["status", "s"]:
-            show_status()
-        elif cmd in ["help", "h"]:
-            show_help()
-        elif cmd in ["quit", "q"]:
-            console.print("[bold red]Quitting the game.[/bold red]")
+def turn_loop():
+    global turn_number
+    total_turns = config["FiggieGame"]["Turns"]
+    opponents = [players[p] for p in players if p != HUMAN_PLAYER]
+    while turn_number <= total_turns:
+        console.rule(f"[bold blue]Turn {turn_number}[/bold blue]")
+        for opponent in opponents:
+            console.print(Panel(f"Interaction with {opponent.name}", style="bold magenta"))
+            choice = console.input(f"[bold]Do you want to [T]rade with {opponent.name} or [P]ass? (T/P): [/bold]").strip().lower()
+            if choice.startswith("t"):
+                result = human_propose_trade(opponent)
+                console.print(Text(result, style="green"))
+            else:
+                result = bot_propose_trade(opponent)
+                console.print(Text(result, style="cyan"))
+        show_status(turn_number)
+        cont = console.input("[bold green]Proceed to next turn? (y/n): [/bold green]").strip().lower()
+        if cont != "y":
             break
-        else:
-            console.print("[bold red]Unknown command. Type 'help' for available commands.[/bold red]")
+        turn_number += 1
 
-    # After time expires or quit.
-    console.rule("[bold green]Final Results[/bold green]")
-    # Compute goal card counts.
+    console.rule("[bold green]Game Over[/bold green]")
     goal_counts = {}
     for p in players.values():
         count = sum(1 for card in p.hand if unicode_to_name[card[0]] == actual_goal_suit)
         goal_counts[p.name] = count
     max_count = max(goal_counts.values()) if goal_counts else 0
     winners = [name for name, count in goal_counts.items() if count == max_count]
+    if winners:
+        share = pot_amount / len(winners)
+        for p in players.values():
+            if p.name in winners:
+                p.money += share
 
-    share = pot_amount / len(winners) if winners else 0
-    for p in players.values():
-        if p.name in winners:
-            p.money += share
-
-    result_table = Table(title="Game Results", show_edge=True)
-    result_table.add_column("Player", style="bold")
-    result_table.add_column("Final Bank", justify="right")
-    result_table.add_column("Goal Cards", justify="right")
-    result_table.add_column("Beliefs", style="dim")
+    final_table = Table(title="Final Results", show_edge=True)
+    final_table.add_column("Player", style="bold")
+    final_table.add_column("Final Bank", justify="right")
+    final_table.add_column("Goal Cards", justify="right")
+    final_table.add_column("Beliefs", style="dim")
     for pname, player in players.items():
-        result_table.add_row(
+        if HIDE_OPPONENTS and pname != HUMAN_PLAYER:
+            hand_str = "Hidden"
+        else:
+            hand_str = ", ".join(player.hand)
+        final_table.add_row(
             pname,
             str(player.money),
             str(goal_counts.get(pname, 0)),
             str(player.beliefs)
         )
-    console.print(result_table)
+    console.print(final_table)
     console.print(f"[bold blue]Winners: {', '.join(winners)}[/bold blue]")
 
-# --- Run the REPL --- #
+# --- Main Program Entry Point ---
 
 def main():
-    console.rule("[bold blue]Welcome to Figgie![/bold blue]")
-    repl()
+    global HIDE_OPPONENTS
+    # Process command-line arguments.
+    import argparse
+    parser = argparse.ArgumentParser(description="Turn-Based Figgie Game")
+    parser.add_argument("--hide-opponents", action="store_true", help="Hide other players' hands from display")
+    args = parser.parse_args()
+    HIDE_OPPONENTS = args.hide_opponents
+
+    console.rule("[bold blue]Welcome to Turn-Based Figgie![/bold blue]")
+    console.print(Panel("In this game, you (P1) will interact each turn with each bot.\n"
+                        "You may propose a trade (buy or sell) or pass—in which case the bot will propose a trade to you.\n"
+                        "Your current hand and money are displayed whenever you are prompted.\n"
+                        "Try to secure cards in the secret goal suit!\n"
+                        "Type your responses when prompted.", style="bold"))
+    # Show the human player's initial hand.
+    human = players[HUMAN_PLAYER]
+    hand_str = ", ".join(human.hand)
+    console.print(Panel(f"Your initial hand:\n{hand_str}\nMoney: {human.money}", title="Your Hand", style="bold green"))
+    turn_loop()
+    console.print(Panel("Thank you for playing Figgie!", style="bold green"))
 
 if __name__ == "__main__":
     main()
