@@ -1,2 +1,2 @@
 # openfiggie
-an analysis of the card game Figgie
+an analysis of the card game Figgie (https://www.figgie.com)
