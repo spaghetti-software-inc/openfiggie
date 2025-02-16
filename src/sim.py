@@ -3,7 +3,7 @@
 Monte Carlo Simulation of a Figgie Round Using PFN (Portable Figgie Notation)
 with Randomized Initial Deal, Simulation Results, Logging, and a Bayesian
 Inference Model for each player.
-Author: [Your Name]
+Author: Spaghetti Software Inc
 Date: 2025-02-15
 """
 
