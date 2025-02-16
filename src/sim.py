@@ -1,11 +1,10 @@
 #!/usr/bin/env python3
 """
-Turn-Based Interactive Simulation of Figgie (Portable Figgie Notation)
-with Bayesian Inference and a Rich-Powered Unicode Interface.
-In this version, the human (P1) gets a chance each turn to interact with each bot
-by proposing trades or passing. The human's current hand and money are displayed
-at the very start and whenever you are prompted.
-A command-line option (--hide-opponents) allows the user to hide the other players' hands.
+Turn-Based Interactive Simulation of Figgie with Pydantic Game State Models
+and a Rich-Powered Unicode Interface.
+In this version, the game state is represented by Pydantic models and
+the human player's hand is summarized as counts per suit (using colors to differentiate red/black).
+A command-line option (--hide-opponents) hides other players' hands.
 Author: [Your Name]
 Date: 2025-02-15
 """
@@ -14,13 +13,55 @@ import random
 import math
 import sys
 import argparse
+from typing import List, Dict
 
 from rich.console import Console
 from rich.table import Table
 from rich.panel import Panel
 from rich.text import Text
 
-# Create a global rich console.
+from pydantic import BaseModel, Field
+
+# --- Pydantic Models ---
+
+class GameMetadata(BaseModel):
+    title: str
+    game_id: str
+    players: int
+    date: str
+    turns: int
+    game_variant: str
+
+class DeckSetup(BaseModel):
+    goal_suit_color: str
+    goal_suit: str
+    distribution: Dict[str, int]
+
+class PlayerState(BaseModel):
+    name: str
+    hand: List[str]
+    money: int
+    beliefs: Dict[str, float]
+
+class TradeEvent(BaseModel):
+    trade_index: int
+    time: float
+    buyer: str
+    seller: str
+    card: str
+    suit: str
+    price: float
+
+class GameState(BaseModel):
+    metadata: GameMetadata
+    deck_setup: DeckSetup
+    players: List[PlayerState]
+    trades: List[TradeEvent]
+    current_turn: int
+    pot: int
+    actual_goal_suit: str
+
+# --- Global Rich Console ---
 console = Console()
 
 # Global flag for hiding opponents' hands.
@@ -61,7 +102,7 @@ def expected_value(card_suit, beliefs):
 def update_beliefs(beliefs, card_suit, price, sigma=3.0):
     """
     Update a belief distribution given an observed trade of a card of suit `card_suit`
-    at a given price. Uses a Gaussian likelihood.
+    at a given price using a Gaussian likelihood.
     """
     new_beliefs = {}
     total = 0.0
@@ -76,6 +117,24 @@ def update_beliefs(beliefs, card_suit, price, sigma=3.0):
         return new_beliefs
     else:
         return {c: 1.0 / len(beliefs) for c in beliefs}
+
+def hand_summary(hand: List[str]) -> str:
+    """
+    Return a summary string that shows the count of cards per suit.
+    Black suits (Spades, Clubs) are shown in blue; red suits (Hearts, Diamonds) in red.
+    """
+    counts = {"Spades": 0, "Clubs": 0, "Hearts": 0, "Diamonds": 0}
+    # Each card label starts with a Unicode symbol.
+    for card in hand:
+        suit = unicode_to_name[card[0]]
+        counts[suit] += 1
+    summary = (
+        f"[blue]♠: {counts['Spades']}[/blue]  "
+        f"[blue]♣: {counts['Clubs']}[/blue]  "
+        f"[red]♥: {counts['Hearts']}[/red]  "
+        f"[red]♦: {counts['Diamonds']}[/red]"
+    )
+    return summary
 
 # --- Player Class ---
 
@@ -141,41 +200,71 @@ for pname, cards in initial_deal.items():
 # Global parameters.
 turn_number = 1
 pot_amount = 100
-# For outcome purposes, we know the actual goal suit.
 actual_goal_suit = config["DeckSetup"]["GoalSuit"]
-
-# Designate P1 as the human player.
 HUMAN_PLAYER = "P1"
+
+# --- Function to Build GameState Model ---
+
+def build_game_state(current_turn: int) -> GameState:
+    metadata = GameMetadata(
+        title=config["FiggieGame"]["Title"],
+        game_id=config["FiggieGame"]["GameID"],
+        players=config["FiggieGame"]["Players"],
+        date=config["FiggieGame"]["Date"],
+        turns=config["FiggieGame"]["Turns"],
+        game_variant=config["FiggieGame"]["GameVariant"],
+    )
+    deck_setup = DeckSetup(
+        goal_suit_color=config["DeckSetup"]["GoalSuitColor"],
+        goal_suit=config["DeckSetup"]["GoalSuit"],
+        distribution=deck_distribution,
+    )
+    player_states = []
+    for pname, p in players.items():
+        # For hand, always show summary for clarity.
+        hand_summary_str = hand_summary(p.hand)
+        player_states.append(PlayerState(
+            name=pname,
+            hand=[hand_summary_str],
+            money=p.money,
+            beliefs=p.beliefs
+        ))
+    trade_events = []
+    for te in trade_events_global:
+        trade_events.append(TradeEvent(**te))
+    return GameState(
+        metadata=metadata,
+        deck_setup=deck_setup,
+        players=player_states,
+        trades=trade_events,
+        current_turn=current_turn,
+        pot=pot_amount,
+        actual_goal_suit=actual_goal_suit
+    )
+
+# Global list for trade events.
+trade_events_global = []
 
 # --- Trade Mechanism Functions ---
 
 def human_propose_trade(opponent):
-    """
-    Let the human (P1) propose a trade with a given opponent.
-    Displays P1's current hand and money.
-    Returns a message string.
-    """
     human = players[HUMAN_PLAYER]
-    hand_str = ", ".join(human.hand)
-    console.print(Panel(f"Your current hand:\n{hand_str}\nMoney: {human.money}", title="Your Hand", style="bold green"))
+    console.print(Panel(f"Your current hand:\n{hand_summary(human.hand)}\nMoney: {human.money}",
+                          title="Your Hand", style="bold green"))
     
     console.print(Panel(f"Your turn to propose a trade with {opponent.name}.", style="bold blue"))
     action = console.input("[bold]Do you want to [B]uy or [S]ell? (B/S): [/bold]").strip().lower()
     if action not in ("b", "s"):
         return "Invalid action. Trade cancelled."
-    
     suit = console.input("[bold]Enter the suit (Spades, Clubs, Hearts, Diamonds): [/bold]").strip().capitalize()
     if suit not in ["Spades", "Clubs", "Hearts", "Diamonds"]:
         return "Invalid suit. Trade cancelled."
-    
     try:
         price = float(console.input("[bold]Enter your proposed price: [/bold]").strip())
     except ValueError:
         return "Invalid price. Trade cancelled."
-    
     alpha = 0.5
     beta = 0.5
-    
     if action == "b":
         opponent_cards = [card for card in opponent.hand if unicode_to_name[card[0]] == suit]
         if not opponent_cards:
@@ -191,10 +280,19 @@ def human_propose_trade(opponent):
             opponent.money += price
             for p in players.values():
                 p.beliefs = update_beliefs(p.beliefs, suit, price, sigma=3.0)
+            event = {
+                "trade_index": len(trade_events_global) + 1,
+                "time": round(turn_number * 10.0, 2),
+                "buyer": HUMAN_PLAYER,
+                "seller": opponent.name,
+                "card": traded_card,
+                "suit": suit,
+                "price": round(price, 2)
+            }
+            trade_events_global.append(event)
             return f"Trade Executed: You bought {traded_card} ({suit}) from {opponent.name} at {price:.2f}."
         else:
             return f"Trade Rejected by {opponent.name} (roll {roll:.2f} vs. accept prob {accept_prob:.2f})."
-    
     else:
         human_cards = [card for card in human.hand if unicode_to_name[card[0]] == suit]
         if not human_cards:
@@ -210,15 +308,21 @@ def human_propose_trade(opponent):
             opponent.money -= price
             for p in players.values():
                 p.beliefs = update_beliefs(p.beliefs, suit, price, sigma=3.0)
+            event = {
+                "trade_index": len(trade_events_global) + 1,
+                "time": round(turn_number * 10.0, 2),
+                "buyer": opponent.name,
+                "seller": HUMAN_PLAYER,
+                "card": traded_card,
+                "suit": suit,
+                "price": round(price, 2)
+            }
+            trade_events_global.append(event)
             return f"Trade Executed: You sold {traded_card} ({suit}) to {opponent.name} at {price:.2f}."
         else:
             return f"Trade Rejected by {opponent.name} (roll {roll:.2f} vs. accept prob {accept_prob:.2f})."
 
 def bot_propose_trade(opponent):
-    """
-    Have the bot (opponent) propose a trade to the human.
-    Returns a message string.
-    """
     action = random.choice(["buy", "sell"])
     if action == "buy":
         human_cards = players[HUMAN_PLAYER].hand
@@ -241,6 +345,16 @@ def bot_propose_trade(opponent):
             opponent.money -= price
             for p in players.values():
                 p.beliefs = update_beliefs(p.beliefs, suit, price, sigma=3.0)
+            event = {
+                "trade_index": len(trade_events_global) + 1,
+                "time": round(turn_number * 10.0, 2),
+                "buyer": opponent.name,
+                "seller": HUMAN_PLAYER,
+                "card": traded_card,
+                "suit": suit,
+                "price": round(price, 2)
+            }
+            trade_events_global.append(event)
             return f"Trade Executed: You sold {traded_card} ({suit}) to {opponent.name} at {price:.2f}."
         else:
             return f"You declined Bot {opponent.name}'s proposal to buy your {suit} card."
@@ -265,6 +379,16 @@ def bot_propose_trade(opponent):
             opponent.money += price
             for p in players.values():
                 p.beliefs = update_beliefs(p.beliefs, suit, price, sigma=3.0)
+            event = {
+                "trade_index": len(trade_events_global) + 1,
+                "time": round(turn_number * 10.0, 2),
+                "buyer": HUMAN_PLAYER,
+                "seller": opponent.name,
+                "card": traded_card,
+                "suit": suit,
+                "price": round(price, 2)
+            }
+            trade_events_global.append(event)
             return f"Trade Executed: You bought {traded_card} ({suit}) from {opponent.name} at {price:.2f}."
         else:
             return f"You declined Bot {opponent.name}'s proposal to sell a {suit} card."
@@ -278,10 +402,9 @@ def show_status(turn):
     status_table.add_column("Hand")
     status_table.add_column("Beliefs", style="dim")
     for pname, player in players.items():
+        hand_str = hand_summary(player.hand)
         if HIDE_OPPONENTS and pname != HUMAN_PLAYER:
             hand_str = "Hidden"
-        else:
-            hand_str = ", ".join(player.hand)
         status_table.add_row(
             pname,
             str(player.money),
@@ -289,6 +412,9 @@ def show_status(turn):
             str(player.beliefs)
         )
     console.print(status_table)
+    # Build and display the game state via Pydantic.
+    game_state = build_game_state(turn)
+    console.print(Panel(game_state.json(indent=2), title="Game State (JSON)", style="magenta"))
 
 def turn_loop():
     global turn_number
@@ -330,10 +456,9 @@ def turn_loop():
     final_table.add_column("Goal Cards", justify="right")
     final_table.add_column("Beliefs", style="dim")
     for pname, player in players.items():
+        hand_str = hand_summary(player.hand)
         if HIDE_OPPONENTS and pname != HUMAN_PLAYER:
             hand_str = "Hidden"
-        else:
-            hand_str = ", ".join(player.hand)
         final_table.add_row(
             pname,
             str(player.money),
@@ -347,8 +472,6 @@ def turn_loop():
 
 def main():
     global HIDE_OPPONENTS
-    # Process command-line arguments.
-    import argparse
     parser = argparse.ArgumentParser(description="Turn-Based Figgie Game")
     parser.add_argument("--hide-opponents", action="store_true", help="Hide other players' hands from display")
     args = parser.parse_args()
@@ -357,13 +480,11 @@ def main():
     console.rule("[bold blue]Welcome to Turn-Based Figgie![/bold blue]")
     console.print(Panel("In this game, you (P1) will interact each turn with each bot.\n"
                         "You may propose a trade (buy or sell) or pass—in which case the bot will propose a trade to you.\n"
-                        "Your current hand and money are displayed whenever you are prompted.\n"
+                        "Your current hand (shown as counts per suit) and money are displayed whenever you are prompted.\n"
                         "Try to secure cards in the secret goal suit!\n"
                         "Type your responses when prompted.", style="bold"))
-    # Show the human player's initial hand.
     human = players[HUMAN_PLAYER]
-    hand_str = ", ".join(human.hand)
-    console.print(Panel(f"Your initial hand:\n{hand_str}\nMoney: {human.money}", title="Your Hand", style="bold green"))
+    console.print(Panel(f"Your initial hand:\n{hand_summary(human.hand)}\nMoney: {human.money}", title="Your Hand", style="bold green"))
     turn_loop()
     console.print(Panel("Thank you for playing Figgie!", style="bold green"))
 
