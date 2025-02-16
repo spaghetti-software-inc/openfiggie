@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """
 Monte Carlo Simulation of a Figgie Round Using PFN (Portable Figgie Notation)
+with Randomized Initial Deal and Simulation Results Included in the Output.
 Author: [Your Name]
 Date: 2025-02-15
 """
@@ -46,7 +47,8 @@ class Player:
 
 def main():
     # For reproducibility in simulation
-    random.seed(42)
+    #random.seed(42)
+    random.seed(31337)
 
     # === PFN configuration (as a TOML–compatible dictionary) === #
     config = {
@@ -67,29 +69,47 @@ def main():
                 "Hearts": 10,
                 "Diamonds": 8
             }
-        },
-        "Deal": {
-            "P1": "S1,S2,S3,C2,C7,H5,H6,H7,D8",
-            "P2": "S4,S5,S6,C1,C8,H3,H9,D2",
-            "P3": "S9,S10,H1,H2,H4,D3,D4,D5",
-            "P4": "C3,C4,C5,C6,H8,H10,D6,D7"
         }
     }
 
+    # === Randomize the initial deal === #
+    deck_distribution = config["DeckSetup"]["Distribution"]
+    # Mapping from suit names to their letter codes
+    suit_letter_map = {"Spades": "S", "Clubs": "C", "Hearts": "H", "Diamonds": "D"}
+    
+    # Construct the deck based on the distribution
+    deck = []
+    for suit, count in deck_distribution.items():
+        letter = suit_letter_map[suit]
+        for i in range(1, count + 1):
+            deck.append(letter + str(i))
+    
+    # Shuffle the deck
+    random.shuffle(deck)
+    
+    # Determine the number of players and deal cards using round-robin distribution.
+    num_players = config["FiggieGame"]["Players"]
+    initial_deal = {}
+    for i in range(num_players):
+        initial_deal[f"P{i+1}"] = []
+    for idx, card in enumerate(deck):
+        player_key = f"P{(idx % num_players) + 1}"
+        initial_deal[player_key].append(card)
+    
+    # Convert each player's hand into a comma-separated string for PFN output.
+    deal_str = {p: ",".join(cards) for p, cards in initial_deal.items()}
+
     # === Create players from the initial deal === #
     players = {}
-    initial_deal = {}  # for output purposes
     INITIAL_MONEY = 350
-    for pname, cards_str in config["Deal"].items():
-        cards = [card.strip() for card in cards_str.split(",")]
-        initial_deal[pname] = cards.copy()
+    for pname, cards in initial_deal.items():
         players[pname] = Player(pname, cards.copy(), INITIAL_MONEY)
 
     # === Game parameters === #
     game_duration = config["FiggieGame"]["GameDuration"]
     goal_suit = config["DeckSetup"]["GoalSuit"]         # e.g., "Spades"
     goal_color = config["DeckSetup"]["GoalSuitColor"]     # e.g., "Black"
-    pot_amount = 100                                    # fixed pot to award the winner
+    pot_amount = 100                                      # fixed pot to award the winner
 
     # For mapping one–letter card prefixes to full suit names
     suit_map = {"S": "Spades", "C": "Clubs", "H": "Hearts", "D": "Diamonds"}
@@ -99,9 +119,9 @@ def main():
     trade_events = []   # list to store each trade event (for PFN output)
     trade_index = 1
 
-    # We use an exponential inter–arrival time for trade events (mean = 5 sec)
+    # Use an exponential inter-arrival time for trade events (mean = 5 sec)
     while current_time < game_duration:
-        dt = random.expovariate(1/5.0)
+        dt = random.expovariate(1 / 5.0)
         current_time += dt
         if current_time >= game_duration:
             break
@@ -137,7 +157,7 @@ def main():
 
         # Use logistic functions to compute acceptance probabilities
         alpha = 0.5
-        beta  = 0.5
+        beta = 0.5
         buyer_prob = logistic(alpha * (buyer_val - candidate_price))
         seller_prob = logistic(beta * (candidate_price - seller_val))
 
@@ -149,7 +169,7 @@ def main():
             buyer.money -= candidate_price
             seller.money += candidate_price
 
-            # Record the trade event (with a discrete TradeIndex and timestamp)
+            # Record the trade event with a discrete TradeIndex and timestamp
             trade_event = {
                 "TradeIndex": trade_index,
                 "T": round(current_time, 2),
@@ -180,15 +200,18 @@ def main():
 
     # Determine which suit in the deck has 12 cards (as revealed at round end).
     revealed_12_suit = None
-    for suit_name, count in config["DeckSetup"]["Distribution"].items():
+    for suit_name, count in deck_distribution.items():
         if count == 12:
             revealed_12_suit = suit_name
             break
 
-    # Build the Result section.
+    # Build the Result section, now with extra simulation results:
     result = {
         "Revealed12CardSuit": revealed_12_suit,
         "GoalSuit": goal_suit,
+        "TradeCount": trade_index - 1,
+        "FinalTradingTime": round(current_time, 2),
+        "GoalCounts": goal_counts,  # goal-suit card count per player
     }
     for pname, player in players.items():
         result[f"{pname}_FinalBank"] = int(round(player.money))
@@ -198,7 +221,7 @@ def main():
     pfn_output = {
         "FiggieGame": config["FiggieGame"],
         "DeckSetup": config["DeckSetup"],
-        "Deal": {p: ",".join(cards) for p, cards in initial_deal.items()},
+        "Deal": deal_str,
         "Trades": trade_events,
         "Result": result
     }
@@ -209,4 +232,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
