@@ -1,6 +1,12 @@
 # OpenFiggie
 An analysis of the card game Figgie (https://www.figgie.com) using console-based game simulation and analysis.
 
+
+
+https://github.com/user-attachments/assets/d43806e3-a57d-4834-bbdc-b39683fdd6e8
+
+
+
 ## Future Work
 - Advanced trading User Interface
 - Real-time gameplay 
