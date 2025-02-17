@@ -1,5 +1,5 @@
-# openfiggie
-an analysis of the card game Figgie (https://www.figgie.com)
+# OpenFiggie
+An analysis of the card game Figgie (https://www.figgie.com) using console-based game simulation and analysis.
 
 ## Introduction
 Figgie is a card game developed by Jane Street in 2013 to emulate the dynamics of open-outcry commodities trading. The game accommodates 4 or 5 players, each starting with $350 in chips. Players trade cards representing four suits—spades (♠), clubs (♣), hearts (♥), and diamonds (♦)—with the objective of amassing the most wealth over multiple rounds. citeturn0search0
@@ -21,9 +21,9 @@ The primary goal is to identify and collect cards from the "goal suit," which is
 
 **Game Setup:**
 
-1. **Ante:** Each player contributes an equal share to form a communal pot of $200.
+**Ante:** Each player contributes an equal share to form a communal pot of $200.
 
-2. **Dealing:** All 40 cards are dealt evenly among the players.
+**Dealing:** All 40 cards are dealt evenly among the players.
 
 **Trading Phase:**
 
@@ -33,9 +33,9 @@ The primary goal is to identify and collect cards from the "goal suit," which is
 
 **Round Conclusion:**
 
-1. **Reveal:** The goal suit is disclosed.
+**Reveal:** The goal suit is disclosed.
 
-2. **Payouts:**
+**Payouts:**
    - **Bonus:** Players receive a $10 bonus from the pot for each goal suit card they possess.
    - **Majority Holder:** The player(s) holding the most goal suit cards claim the remaining pot. If multiple players tie for the majority, they split the remainder evenly. citeturn0search0
 
