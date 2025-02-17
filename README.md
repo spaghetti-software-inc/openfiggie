@@ -1,6 +1,11 @@
 # OpenFiggie
 An analysis of the card game Figgie (https://www.figgie.com) using console-based game simulation and analysis.
 
+## Future Work
+- Advanced trading User Interface
+- Real-time gameplay 
+- Scaling up to large number of players / bots
+
 ## Introduction
 Figgie is a card game developed by Jane Street in 2013 to emulate the dynamics of open-outcry commodities trading. The game accommodates 4 or 5 players, each starting with $350 in chips. Players trade cards representing four suits—spades (♠), clubs (♣), hearts (♥), and diamonds (♦)—with the objective of amassing the most wealth over multiple rounds. citeturn0search0
 
