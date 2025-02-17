@@ -12,7 +12,11 @@ In this version:
   - Trade executed messages now use Unicode suit symbols.
   - After each executed trade, your updated hand and money are shown.
   - A command-line option (--hide-opponents) hides opponents' hands.
-Author: [Your Name]
+  - A "Score Panel" is displayed after each turn, and the actual goal suit is revealed before final scoring.
+
+  [NEW] After the human interacts with a bot, that bot attempts to trade with the other bots
+        in a similar manner (bot-to-bot trades), and these trades are displayed to the console.
+
 Date: 2025-02-15
 """
 
@@ -285,12 +289,140 @@ def build_game_state(current_turn: int) -> GameState:
         actual_goal_suit=actual_goal_suit
     )
 
-# --- Trade Mechanism Functions ---
+# ---------------------------------------------------------------------
+#     NEW or UPDATED SECTIONS FOR BOT-TO-BOT TRADING
+# ---------------------------------------------------------------------
+
+def bot_vs_bot_propose_trade(botA, botB):
+    """
+    Let botA propose a single trade to botB, chosen randomly as buy or sell.
+    There is no user input. The acceptance is determined by logistic acceptance
+    probabilities, just like the user logic, but automatically.
+
+    Return a message describing the trade result (success/failure).
+    """
+
+    # Decide if botA is "buying" or "selling"
+    action = random.choice(["buy", "sell"])
+
+    # If buying, pick a card from botB's hand. If none, fail.
+    # If selling, pick a card from botA's hand. If none, fail.
+    if action == "buy":
+        # Choose a random card from botB's hand
+        if not botB.hand:
+            return f"{botA.name} tried to buy from {botB.name}, but {botB.name} has no cards."
+        card = random.choice(botB.hand)
+        suit = unicode_to_name[card[0]]
+        # The "fair" price is around the EV from botA's perspective, plus noise
+        ev = expected_value(suit, botA.pf.get_belief_distribution())
+        price = ev + random.uniform(-2, 2)  # random offset
+        if price < 0.5:
+            price = 0.5  # Set a minimum price so we don't do weird negative or near-zero trades
+
+        # If botA can't afford price, no trade
+        if botA.money < price:
+            return f"{botA.name} cannot afford to buy a {suit_unicode_map[suit]} card from {botB.name} at ${price:.2f}."
+
+        # Acceptance: from botB's perspective
+        # Using logistic(probFactor * (price - expectedValueOfSuitForBotB))
+        botB_ev = expected_value(suit, botB.pf.get_belief_distribution())
+        probFactor = 0.5
+        acceptProb = logistic(probFactor * (price - botB_ev))
+        roll = random.random()
+
+        if roll < acceptProb:
+            # Trade executes
+            botB.hand.remove(card)
+            botA.hand.append(card)
+            botA.money -= price
+            botB.money += price
+            # Particle filter update for all
+            for p in players.values():
+                p.pf.update(suit, price, sigma=3.0)
+            event = {
+                "trade_index": len(trade_events_global) + 1,
+                "time": round(turn_number * 10.0, 2),
+                "buyer": botA.name,
+                "seller": botB.name,
+                "card": f"{suit_unicode_map[suit]} card",
+                "suit": suit,
+                "price": round(price, 2)
+            }
+            trade_events_global.append(event)
+            return (f"[bold yellow]Bot-to-Bot Trade Executed[/bold yellow]: "
+                    f"{botA.name} bought a {suit_unicode_map[suit]} card from {botB.name} at ${price:.2f}.")
+        else:
+            return (f"{botA.name} offered ${price:.2f} for {suit_unicode_map[suit]}, "
+                    f"but {botB.name} refused (roll={roll:.2f}, acceptProb={acceptProb:.2f}).")
+
+    else:
+        # action == "sell"
+        if not botA.hand:
+            return f"{botA.name} tried to sell to {botB.name}, but {botA.name} has no cards."
+        card = random.choice(botA.hand)
+        suit = unicode_to_name[card[0]]
+        ev = expected_value(suit, botA.pf.get_belief_distribution())
+        price = ev + random.uniform(-2, 2)
+        if price < 0.5:
+            price = 0.5
+
+        # If botB can't afford price, no trade
+        if botB.money < price:
+            return f"{botB.name} cannot afford to buy a {suit_unicode_map[suit]} card from {botA.name} at ${price:.2f}."
+
+        # Acceptance: from botB's perspective, but in a "buy" sense
+        # acceptance prob ~ logistic(probFactor * (botB_ev - price))
+        botB_ev = expected_value(suit, botB.pf.get_belief_distribution())
+        probFactor = 0.5
+        acceptProb = logistic(probFactor * (botB_ev - price))
+        roll = random.random()
+
+        if roll < acceptProb:
+            # Trade executes
+            botA.hand.remove(card)
+            botB.hand.append(card)
+            botB.money -= price
+            botA.money += price
+            for p in players.values():
+                p.pf.update(suit, price, sigma=3.0)
+            event = {
+                "trade_index": len(trade_events_global) + 1,
+                "time": round(turn_number * 10.0, 2),
+                "buyer": botB.name,
+                "seller": botA.name,
+                "card": f"{suit_unicode_map[suit]} card",
+                "suit": suit,
+                "price": round(price, 2)
+            }
+            trade_events_global.append(event)
+            return (f"[bold yellow]Bot-to-Bot Trade Executed[/bold yellow]: "
+                    f"{botA.name} sold a {suit_unicode_map[suit]} card to {botB.name} at ${price:.2f}.")
+        else:
+            return (f"{botA.name} wanted ${price:.2f} for {suit_unicode_map[suit]}, "
+                    f"but {botB.name} refused (roll={roll:.2f}, acceptProb={acceptProb:.2f}).")
+
+
+def run_bot_to_bot_trades(active_bot, other_bots):
+    """
+    After the user has interacted with 'active_bot', let 'active_bot' attempt trades
+    with each other bot in the list 'other_bots'. We do just one attempt per other bot.
+    Display the result.
+    """
+    for bot in other_bots:
+        if bot.name == active_bot.name:
+            continue  # skip self
+        msg = bot_vs_bot_propose_trade(active_bot, bot)
+        console.print(Text(msg, style="cyan"))
+
+
+# --- Trade Mechanism Functions (Human <-> Bot) ---
 
 def human_propose_trade(opponent):
     human = players[HUMAN_PLAYER]
-    console.print(Panel(f"Your current hand:\n{hand_summary(human.hand)}\nMoney: {human.money}",
-                          title="Your Hand", style="bold green"))
+    console.print(Panel(
+        f"Your current hand:\n{hand_summary(human.hand)}\nMoney: {human.money}",
+        title="Your Hand", style="bold green")
+    )
     console.print(Panel(f"Your turn to propose a trade with {opponent.name}.", style="bold blue"))
     
     action = console.input("[bold]Do you want to [B]uy or [S]ell? (B/S): [/bold]").strip().lower()
@@ -342,11 +474,15 @@ def human_propose_trade(opponent):
             }
             trade_events_global.append(event)
             msg = f"Trade Executed: You bought one {suit_unicode_map[suit]} card from {opponent.name} at {price:.2f}."
-            console.print(Panel(f"Updated Hand:\n{hand_summary(human.hand)}\nMoney: {human.money}", title="Your Updated Hand", style="bold green"))
+            console.print(Panel(
+                f"Updated Hand:\n{hand_summary(human.hand)}\nMoney: {human.money}",
+                title="Your Updated Hand", style="bold green")
+            )
             return msg
         else:
             return f"Trade Rejected by {opponent.name} (roll {roll:.2f} vs. accept prob {accept_prob:.2f})."
     else:
+        # action == "s"
         human_cards = [card for card in human.hand if unicode_to_name[card[0]] == suit]
         if not human_cards:
             return f"You have no {suit} cards to sell. Trade cannot proceed."
@@ -372,7 +508,10 @@ def human_propose_trade(opponent):
             }
             trade_events_global.append(event)
             msg = f"Trade Executed: You sold one {suit_unicode_map[suit]} card to {opponent.name} at {price:.2f}."
-            console.print(Panel(f"Updated Hand:\n{hand_summary(human.hand)}\nMoney: {human.money}", title="Your Updated Hand", style="bold green"))
+            console.print(Panel(
+                f"Updated Hand:\n{hand_summary(human.hand)}\nMoney: {human.money}",
+                title="Your Updated Hand", style="bold green")
+            )
             return msg
         else:
             return f"Trade Rejected by {opponent.name} (roll {roll:.2f} vs. accept prob {accept_prob:.2f})."
@@ -390,7 +529,9 @@ def bot_propose_trade(opponent):
         price = bot_ev + random.uniform(0, 2)
         if opponent.money < price:
             return f"Bot {opponent.name} does not have enough money to buy. Trade cancelled."
-        response = console.input(f"[bold]Bot {opponent.name} proposes to BUY your {suit_unicode_map[suit]} card for {price:.2f}. Accept? (y/n): [/bold]").strip().lower()
+        response = console.input(
+            f"[bold]Bot {opponent.name} proposes to BUY your {suit_unicode_map[suit]} card for {price:.2f}. Accept? (y/n): [/bold]"
+        ).strip().lower()
         if response == "y":
             human_cards = [card for card in players[HUMAN_PLAYER].hand if unicode_to_name[card[0]] == suit]
             if not human_cards:
@@ -414,11 +555,15 @@ def bot_propose_trade(opponent):
             trade_events_global.append(event)
             msg = f"Trade Executed: You sold one {suit_unicode_map[suit]} card to {opponent.name} at {price:.2f}."
             human = players[HUMAN_PLAYER]
-            console.print(Panel(f"Updated Hand:\n{hand_summary(human.hand)}\nMoney: {human.money}", title="Your Updated Hand", style="bold green"))
+            console.print(Panel(
+                f"Updated Hand:\n{hand_summary(human.hand)}\nMoney: {human.money}",
+                title="Your Updated Hand", style="bold green")
+            )
             return msg
         else:
             return f"You declined Bot {opponent.name}'s proposal to buy your {suit_unicode_map[suit]} card."
     else:
+        # action == "sell"
         bot_cards = [card for card in opponent.hand]
         if bot_cards:
             card = random.choice(bot_cards)
@@ -429,7 +574,9 @@ def bot_propose_trade(opponent):
         price = bot_ev - random.uniform(0, 2)
         if players[HUMAN_PLAYER].money < price:
             return f"You do not have enough money to buy. Trade cancelled."
-        response = console.input(f"[bold]Bot {opponent.name} proposes to SELL you a {suit_unicode_map[suit]} card for {price:.2f}. Buy? (y/n): [/bold]").strip().lower()
+        response = console.input(
+            f"[bold]Bot {opponent.name} proposes to SELL you a {suit_unicode_map[suit]} card for {price:.2f}. Buy? (y/n): [/bold]"
+        ).strip().lower()
         if response == "y":
             bot_cards = [card for card in opponent.hand if unicode_to_name[card[0]] == suit]
             if not bot_cards:
@@ -453,7 +600,10 @@ def bot_propose_trade(opponent):
             trade_events_global.append(event)
             msg = f"Trade Executed: You bought one {suit_unicode_map[suit]} card from {opponent.name} at {price:.2f}."
             human = players[HUMAN_PLAYER]
-            console.print(Panel(f"Updated Hand:\n{hand_summary(human.hand)}\nMoney: {human.money}", title="Your Updated Hand", style="bold green"))
+            console.print(Panel(
+                f"Updated Hand:\n{hand_summary(human.hand)}\nMoney: {human.money}",
+                title="Your Updated Hand", style="bold green")
+            )
             return msg
         else:
             return f"You declined Bot {opponent.name}'s proposal to sell a {suit_unicode_map[suit]} card."
@@ -473,48 +623,92 @@ def show_status(turn):
         beliefs = player.pf.get_belief_distribution()
         status_table.add_row(
             pname,
-            str(player.money),
+            f"{player.money:.2f}",
             hand_str,
-            str(beliefs)
+            str({k: round(v,2) for k,v in beliefs.items()})  # rounding beliefs for readability
         )
     console.print(status_table)
     game_state = build_game_state(turn)
     # Use model_dump_json (Pydantic v2) instead of json(indent=2)
-    console.print(Panel(game_state.model_dump_json(indent=2), title="Game State (JSON)", style="magenta"))
+    #console.print(Panel(game_state.model_dump_json(indent=2), title="Game State (JSON)", style="magenta"))
+
+def show_score_panel(turn):
+    """
+    Display each player's money and how many cards of the actual goal suit they hold.
+    Called after each turn to provide a 'scoreboard' snapshot.
+    """
+    console.rule(f"[bold green]Scores After Turn {turn}[/bold green]")
+    score_table = Table(title=f"Scoreboard (Goal Suit = {actual_goal_suit})", show_edge=True)
+    score_table.add_column("Player", style="bold")
+    score_table.add_column("Money", justify="right")
+    score_table.add_column(f"{actual_goal_suit} Cards", justify="right")
+    for pname, p in players.items():
+        goal_count = sum(1 for c in p.hand if unicode_to_name[c[0]] == actual_goal_suit)
+        score_table.add_row(pname, f"{p.money:.2f}", str(goal_count))
+    console.print(score_table)
 
 def turn_loop():
     global turn_number
     total_turns = config["FiggieGame"]["Turns"]
-    opponents = [players[p] for p in players if p != HUMAN_PLAYER]
+    all_bots = [players[p] for p in players if p != HUMAN_PLAYER]
+
     while turn_number <= total_turns:
         console.rule(f"[bold blue]Turn {turn_number}[/bold blue]")
-        for opponent in opponents:
+        
+        # For each bot: user interacts with the bot, then that bot interacts with other bots
+        for opponent in all_bots:
             console.print(Panel(f"Interaction with {opponent.name}", style="bold magenta"))
-            choice = console.input(f"[bold]Do you want to [T]rade with {opponent.name} or [P]ass? (T/P): [/bold]").strip().lower()
+            choice = console.input(
+                f"[bold]Do you want to [T]rade with {opponent.name} or [P]ass? (T/P): [/bold]"
+            ).strip().lower()
+            
             if choice.startswith("t"):
                 result = human_propose_trade(opponent)
                 console.print(Text(result, style="green"))
             else:
                 result = bot_propose_trade(opponent)
                 console.print(Text(result, style="cyan"))
+
+            # [NEW] Now let "opponent" do bot-to-bot trades with other bots
+            other_bots = [b for b in all_bots if b.name != opponent.name]
+            run_bot_to_bot_trades(opponent, other_bots)
+
+        # Show the status table + game state JSON
         show_status(turn_number)
+        # Show scoreboard after each turn
+        show_score_panel(turn_number)
+
         cont = console.input("[bold green]Proceed to next turn? (y/n): [/bold green]").strip().lower()
         if cont != "y":
             break
         turn_number += 1
 
     console.rule("[bold green]Game Over[/bold green]")
+    
+    # Reveal the goal suit explicitly before final scoring
+    console.print(Panel(
+        f"[bold yellow]The Goal Suit is: [bold red]{actual_goal_suit}[/bold red][/bold yellow]",
+        style="bold"
+    ))
+    
+    # Tally up final counts for each player
     goal_counts = {}
     for p in players.values():
         count = sum(1 for card in p.hand if unicode_to_name[card[0]] == actual_goal_suit)
         goal_counts[p.name] = count
+    
+    # Determine winners
     max_count = max(goal_counts.values()) if goal_counts else 0
     winners = [name for name, count in goal_counts.items() if count == max_count]
+    
+    # Split pot among winners
     if winners:
         share = pot_amount / len(winners)
         for p in players.values():
             if p.name in winners:
                 p.money += share
+    
+    # Display final results
     final_table = Table(title="Final Results", show_edge=True)
     final_table.add_column("Player", style="bold")
     final_table.add_column("Final Bank", justify="right")
@@ -526,12 +720,13 @@ def turn_loop():
             hand_str = "Hidden"
         final_table.add_row(
             pname,
-            str(player.money),
+            f"{player.money:.2f}",
             str(goal_counts.get(pname, 0)),
-            str(player.pf.get_belief_distribution())
+            str({k: round(v,2) for k,v in player.pf.get_belief_distribution().items()})
         )
     console.print(final_table)
-    console.print(f"[bold blue]Winners: {', '.join(winners)}[/bold blue]")
+    
+    console.print(f"[bold blue]Winners: {', '.join(winners) if winners else 'No winners'}[/bold blue]")
 
 def main():
     global HIDE_OPPONENTS
@@ -541,13 +736,19 @@ def main():
     HIDE_OPPONENTS = args.hide_opponents
 
     console.rule("[bold blue]Welcome to Turn-Based Figgie![/bold blue]")
-    console.print(Panel("In this game, you (P1) will interact each turn with each bot.\n"
-                        "You may propose a trade (buy or sell) or pass—in which case the bot will propose a trade to you.\n"
-                        "Your current hand (shown as counts per suit) and money are displayed whenever you are prompted.\n"
-                        "Try to secure cards in the secret goal suit!\n"
-                        "Type your responses when prompted.", style="bold"))
+    console.print(Panel(
+        "In this game, you (P1) will interact each turn with each bot.\n"
+        "You may propose a trade (buy or sell) or pass—in which case the bot will propose a trade to you.\n"
+        "[NEW] After each bot interaction with you, that bot will attempt trades with other bots.\n"
+        "Your current hand (shown as counts per suit) and money are displayed whenever you are prompted.\n"
+        "Try to secure cards in the secret goal suit!\n"
+        "Type your responses when prompted.", style="bold")
+    )
     human = players[HUMAN_PLAYER]
-    console.print(Panel(f"Your initial hand:\n{hand_summary(human.hand)}\nMoney: {human.money}", title="Your Hand", style="bold green"))
+    console.print(Panel(
+        f"Your initial hand:\n{hand_summary(human.hand)}\nMoney: {human.money:.2f}",
+        title="Your Hand", style="bold green")
+    )
     turn_loop()
     console.print(Panel("Thank you for playing Figgie!", style="bold green"))
 
