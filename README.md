@@ -40,7 +40,7 @@ The primary goal is to identify and collect cards from the "goal suit," which is
 
 - **Duration:** 4 minutes
 
-- **Mechanics:** Players engage in open trading, placing bids and offers to buy or sell individual cards. Trading is unstructured, allowing for dynamic negotiation and strategy. citeturn0search0
+- **Mechanics:** Players engage in open trading, placing bids and offers to buy or sell individual cards. Trading is unstructured, allowing for dynamic negotiation and strategy. 
 
 **Round Conclusion:**
 
