@@ -13,7 +13,7 @@ https://github.com/user-attachments/assets/d43806e3-a57d-4834-bbdc-b39683fdd6e8
 - Scaling up to large number of players / bots
 
 ## Introduction
-Figgie is a card game developed by Jane Street in 2013 to emulate the dynamics of open-outcry commodities trading. The game accommodates 4 or 5 players, each starting with $350 in chips. Players trade cards representing four suits—spades (♠), clubs (♣), hearts (♥), and diamonds (♦)—with the objective of amassing the most wealth over multiple rounds. citeturn0search0
+Figgie is a card game developed by Jane Street in 2013 to emulate the dynamics of open-outcry commodities trading. The game accommodates 4 or 5 players, each starting with $350 in chips. Players trade cards representing four suits—spades (♠), clubs (♣), hearts (♥), and diamonds (♦)—with the objective of amassing the most wealth over multiple rounds. 
 
 **Deck Composition:**
 
@@ -28,7 +28,7 @@ The specific distribution of suits is unknown to players at the start of each ro
 
 **Objective:**
 
-The primary goal is to identify and collect cards from the "goal suit," which is the suit that matches the color (red or black) of the 12-card suit. The goal suit contains either 8 or 10 cards and is the only suit with value at the end of the round. citeturn0search0
+The primary goal is to identify and collect cards from the "goal suit," which is the suit that matches the color (red or black) of the 12-card suit. The goal suit contains either 8 or 10 cards and is the only suit with value at the end of the round. 
 
 **Game Setup:**
 
@@ -48,7 +48,7 @@ The primary goal is to identify and collect cards from the "goal suit," which is
 
 **Payouts:**
    - **Bonus:** Players receive a $10 bonus from the pot for each goal suit card they possess.
-   - **Majority Holder:** The player(s) holding the most goal suit cards claim the remaining pot. If multiple players tie for the majority, they split the remainder evenly. citeturn0search0
+   - **Majority Holder:** The player(s) holding the most goal suit cards claim the remaining pot. If multiple players tie for the majority, they split the remainder evenly. 
 
 **Strategic Considerations:**
 
@@ -60,7 +60,7 @@ The primary goal is to identify and collect cards from the "goal suit," which is
 
 **Learning Mode:**
 
-For newcomers, Figgie offers a learning mode that extends the trading period to 20 minutes. This mode can display opponents' hands to facilitate understanding of game mechanics. citeturn0search0
+For newcomers, Figgie offers a learning mode that extends the trading period to 20 minutes. This mode can display opponents' hands to facilitate understanding of game mechanics. 
 
 For a visual explanation and tutorial on how to play Figgie, you might find the following video helpful:
 
